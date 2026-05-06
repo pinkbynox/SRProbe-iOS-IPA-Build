@@ -3,6 +3,7 @@
 #import <errno.h>
 #import <fcntl.h>
 #import <spawn.h>
+#import <dirent.h>
 #import <sys/mman.h>
 #import <sys/stat.h>
 #import <sys/syscall.h>
@@ -139,6 +140,8 @@ static void test_syscall_bad_fd_no_slide(void) {
 
 static void test_syscall_container_file_no_slide(void) {
     NSString *path = makeProbeFile();
+
+    errno = 0;
     int fd = open(path.UTF8String, O_RDONLY);
 
     SRLog(@"probe file no_slide fd=%d errno=%d (%s)", fd, errno, strerror(errno));
@@ -176,6 +179,8 @@ static void test_syscall_container_file_no_slide(void) {
 
 static void test_syscall_container_file_with_slide_flag_benign(void) {
     NSString *path = makeProbeFile();
+
+    errno = 0;
     int fd = open(path.UTF8String, O_RDONLY);
 
     SRLog(@"probe file with_slide fd=%d errno=%d (%s)", fd, errno, strerror(errno));
@@ -227,7 +232,7 @@ static void test_path_no_slide(NSString *path) {
     errno = 0;
     int fd = open(path.UTF8String, O_RDONLY);
 
-    SRLog(@"open system path=%@ fd=%d errno=%d (%s)",
+    SRLog(@"open path=%@ fd=%d errno=%d (%s)",
           path, fd, errno, strerror(errno));
 
     if (fd < 0) {
@@ -264,7 +269,7 @@ static void test_path_with_slide_benign(NSString *path) {
     errno = 0;
     int fd = open(path.UTF8String, O_RDONLY);
 
-    SRLog(@"open system path with_slide=%@ fd=%d errno=%d (%s)",
+    SRLog(@"open path with_slide=%@ fd=%d errno=%d (%s)",
           path, fd, errno, strerror(errno));
 
     if (fd < 0) {
@@ -309,15 +314,111 @@ static void test_path_with_slide_benign(NSString *path) {
     close(fd);
 }
 
+static void list_dir(NSString *path) {
+    errno = 0;
+
+    NSError *error = nil;
+    NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path
+                                                                                     error:&error];
+
+    SRLog(@"list_dir %@ count=%lu errno=%d (%s) error=%@",
+          path,
+          (unsigned long)items.count,
+          errno,
+          strerror(errno),
+          error ? error.localizedDescription : @"nil");
+
+    for (NSString *item in items) {
+        if ([item containsString:@"dyld"] ||
+            [item containsString:@"cache"] ||
+            [item containsString:@"Cache"] ||
+            [item containsString:@"Cryptex"] ||
+            [item containsString:@"cryptex"] ||
+            [item containsString:@"OS"]) {
+            SRLog(@"  item %@", item);
+        }
+    }
+}
+
+static void test_dirs(void) {
+    NSArray<NSString *> *dirs = @[
+        @"/",
+        @"/usr/lib",
+        @"/System",
+        @"/System/Library",
+        @"/System/Library/Caches",
+        @"/System/Library/Caches/com.apple.dyld",
+        @"/System/Library/dyld",
+        @"/System/Cryptexes",
+        @"/System/Cryptexes/OS",
+        @"/System/Cryptexes/OS/System",
+        @"/System/Cryptexes/OS/System/Library",
+        @"/System/Cryptexes/OS/System/Library/Caches",
+        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
+        @"/System/Cryptexes/OS/System/Library/dyld",
+        @"/System/Volumes",
+        @"/System/Volumes/Preboot",
+        @"/System/Volumes/Preboot/Cryptexes",
+        @"/System/Volumes/Preboot/Cryptexes/OS",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
+        @"/private",
+        @"/private/preboot",
+        @"/private/preboot/Cryptexes",
+        @"/private/preboot/Cryptexes/OS",
+        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld"
+    ];
+
+    for (NSString *dir in dirs) {
+        list_dir(dir);
+    }
+}
+
 static void test_system_paths(void) {
     NSArray<NSString *> *paths = @[
         @"/usr/lib/dyld",
+
         @"/System/Library/Frameworks/UIKit.framework/UIKit",
         @"/System/Library/Frameworks/Foundation.framework/Foundation",
+
         @"/System/Library/dyld/dyld_shared_cache_arm64e",
+        @"/System/Library/dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Library/dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
+
         @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
+
+        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
+
+        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
+
         @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e"
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
+
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
+
+        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
+        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
+        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
+
+        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
+        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
+        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols"
     ];
 
     for (NSString *path in paths) {
@@ -336,9 +437,11 @@ static void runProbe(void) {
     test_shared_region_check();
     test_syscall_empty();
     test_syscall_bad_fd_no_slide();
+
     test_syscall_container_file_no_slide();
     test_syscall_container_file_with_slide_flag_benign();
 
+    test_dirs();
     test_system_paths();
 
     SRLog(@"===== end =====");

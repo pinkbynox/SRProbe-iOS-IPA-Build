@@ -7,7 +7,10 @@
 #import <sys/mman.h>
 #import <sys/stat.h>
 #import <sys/syscall.h>
+#import <sys/wait.h>
 #import <unistd.h>
+
+extern char **environ;
 
 #ifndef SYS_shared_region_check_np
 #define SYS_shared_region_check_np 294
@@ -66,6 +69,18 @@ static void SRLog(NSString *fmt, ...) {
                                                         object:nil];
 }
 
+static void SRChildLog(FILE *f, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    fprintf(f, "[SR-CHILD] ");
+    vfprintf(f, fmt, args);
+    fprintf(f, "\n");
+    fflush(f);
+
+    va_end(args);
+}
+
 static void log_errno(NSString *name, long ret) {
     int e = errno;
     SRLog(@"%@ ret=%ld errno=%d (%s)", name, ret, e, strerror(e));
@@ -92,15 +107,6 @@ static void test_shared_region_check(void) {
 
     SRLog(@"shared_region_check_np syscall ret=%ld errno=%d (%s) start=0x%llx",
           ret, errno, strerror(errno), start);
-}
-
-static void test_shared_region_check_null(void) {
-    errno = 0;
-
-    long ret = syscall(SYS_shared_region_check_np, NULL);
-
-    SRLog(@"shared_region_check_np NULL syscall ret=%ld errno=%d (%s)",
-          ret, errno, strerror(errno));
 }
 
 static void test_syscall_empty(void) {
@@ -356,11 +362,6 @@ static void test_dirs(void) {
         @"/System/Cryptexes/OS/System/Library/Caches",
         @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
         @"/System/Cryptexes/OS/System/Library/dyld",
-        @"/System/Volumes",
-        @"/System/Volumes/Preboot",
-        @"/System/Volumes/Preboot/Cryptexes",
-        @"/System/Volumes/Preboot/Cryptexes/OS",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
         @"/private",
         @"/private/preboot",
         @"/private/preboot/Cryptexes",
@@ -377,47 +378,10 @@ static void test_system_paths(void) {
     NSArray<NSString *> *paths = @[
         @"/usr/lib/dyld",
 
-        @"/System/Library/Frameworks/UIKit.framework/UIKit",
-        @"/System/Library/Frameworks/Foundation.framework/Foundation",
-
-        @"/System/Library/dyld/dyld_shared_cache_arm64e",
-        @"/System/Library/dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Library/dyld/dyld_shared_cache_arm64e.2",
-        @"/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
-
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
-        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
-
-        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
-        @"/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
-
         @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
-        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
         @"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
 
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
-
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
-        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols",
-
-        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.1",
-        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.2",
-        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e.symbols",
-
         @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
-        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.1",
-        @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.2",
         @"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e.symbols"
     ];
 
@@ -428,6 +392,161 @@ static void test_system_paths(void) {
     for (NSString *path in paths) {
         test_path_with_slide_benign(path);
     }
+}
+
+static NSString *childLogPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"srprobe_child.log"];
+}
+
+static NSString *fakeDSCDirPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"fake_dsc"];
+}
+
+static void createFakeDSCDir(void) {
+    NSString *dir = fakeDSCDirPath();
+
+    NSError *error = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:&error];
+
+    SRLog(@"create fake dsc dir=%@ error=%@", dir, error ? error.localizedDescription : @"nil");
+
+    NSString *dummyCache = [dir stringByAppendingPathComponent:@"dyld_shared_cache_arm64e"];
+    NSMutableData *data = [NSMutableData dataWithLength:0x4000];
+    memcpy((uint8_t *)data.mutableBytes, "dyld_v1  arm64e", 15);
+    BOOL ok = [data writeToFile:dummyCache atomically:YES];
+
+    SRLog(@"create dummy cache=%@ ok=%d", dummyCache, ok ? 1 : 0);
+}
+
+static void test_spawn_child_with_dyld_env(void) {
+    NSString *exe = [[NSBundle mainBundle] executablePath];
+    NSString *logPath = childLogPath();
+    NSString *fakeDir = fakeDSCDirPath();
+
+    [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
+    createFakeDSCDir();
+
+    SRLog(@"spawn child exe=%@", exe);
+    SRLog(@"spawn child log=%@", logPath);
+    SRLog(@"spawn child DYLD_SHARED_CACHE_DIR=%@", fakeDir);
+
+    const char *exe_c = [exe fileSystemRepresentation];
+    const char *log_c = [logPath fileSystemRepresentation];
+    const char *fake_c = [fakeDir fileSystemRepresentation];
+
+    char arg0[4096];
+    char logEnv[4096];
+    char cacheDirEnv[4096];
+
+    snprintf(arg0, sizeof(arg0), "%s", exe_c);
+    snprintf(logEnv, sizeof(logEnv), "SRPROBE_CHILD_LOG=%s", log_c);
+    snprintf(cacheDirEnv, sizeof(cacheDirEnv), "DYLD_SHARED_CACHE_DIR=%s", fake_c);
+
+    char *argv_child[] = {
+        arg0,
+        (char *)"--sr-child",
+        NULL
+    };
+
+    char *envp_child[] = {
+        cacheDirEnv,
+        (char *)"DYLD_SHARED_REGION=private",
+        (char *)"DYLD_PRINT_ENV=1",
+        (char *)"DYLD_PRINT_APIS=1",
+        (char *)"DYLD_PRINT_SEGMENTS=1",
+        logEnv,
+        NULL
+    };
+
+    pid_t pid = 0;
+    errno = 0;
+
+    int ret = posix_spawn(&pid, exe_c, NULL, NULL, argv_child, envp_child);
+
+    SRLog(@"posix_spawn ret=%d errno=%d (%s) pid=%d", ret, errno, strerror(errno), pid);
+
+    if (ret == 0 && pid > 0) {
+        int status = 0;
+        errno = 0;
+        pid_t waited = waitpid(pid, &status, 0);
+
+        SRLog(@"waitpid ret=%d errno=%d (%s) status=0x%x WIFEXITED=%d WEXITSTATUS=%d WIFSIGNALED=%d WTERMSIG=%d",
+              waited,
+              errno,
+              strerror(errno),
+              status,
+              WIFEXITED(status),
+              WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+              WIFSIGNALED(status),
+              WIFSIGNALED(status) ? WTERMSIG(status) : -1);
+    }
+
+    NSError *error = nil;
+    NSString *childLogs = [NSString stringWithContentsOfFile:logPath
+                                                    encoding:NSUTF8StringEncoding
+                                                       error:&error];
+
+    if (childLogs.length > 0) {
+        SRLog(@"----- child log begin -----\n%@----- child log end -----", childLogs);
+    } else {
+        SRLog(@"no child log read error=%@", error ? error.localizedDescription : @"nil");
+    }
+}
+
+static int runChildMode(int argc, char *argv[]) {
+    const char *logPath = getenv("SRPROBE_CHILD_LOG");
+    if (!logPath) {
+        logPath = "/tmp/srprobe_child_missing_env.log";
+    }
+
+    FILE *f = fopen(logPath, "a");
+    if (!f) {
+        return 111;
+    }
+
+    SRChildLog(f, "===== child begin =====");
+    SRChildLog(f, "pid=%d", getpid());
+    SRChildLog(f, "argv0=%s", argv[0] ? argv[0] : "(null)");
+
+    const char *dscDir = getenv("DYLD_SHARED_CACHE_DIR");
+    const char *dscRegion = getenv("DYLD_SHARED_REGION");
+    const char *dyldPrintEnv = getenv("DYLD_PRINT_ENV");
+    const char *dyldPrintApis = getenv("DYLD_PRINT_APIS");
+    const char *dyldPrintSegments = getenv("DYLD_PRINT_SEGMENTS");
+
+    SRChildLog(f, "getenv DYLD_SHARED_CACHE_DIR=%s", dscDir ? dscDir : "(null)");
+    SRChildLog(f, "getenv DYLD_SHARED_REGION=%s", dscRegion ? dscRegion : "(null)");
+    SRChildLog(f, "getenv DYLD_PRINT_ENV=%s", dyldPrintEnv ? dyldPrintEnv : "(null)");
+    SRChildLog(f, "getenv DYLD_PRINT_APIS=%s", dyldPrintApis ? dyldPrintApis : "(null)");
+    SRChildLog(f, "getenv DYLD_PRINT_SEGMENTS=%s", dyldPrintSegments ? dyldPrintSegments : "(null)");
+
+    errno = 0;
+    uint64_t start = 0;
+    long ret = syscall(SYS_shared_region_check_np, &start);
+
+    SRChildLog(f,
+               "shared_region_check_np ret=%ld errno=%d (%s) start=0x%llx",
+               ret,
+               errno,
+               strerror(errno),
+               start);
+
+    errno = 0;
+    long ret536 = syscall(SYS_shared_region_map_and_slide_2_np, 0, NULL, 0, NULL);
+
+    SRChildLog(f,
+               "syscall536 empty ret=%ld errno=%d (%s)",
+               ret536,
+               errno,
+               strerror(errno));
+
+    SRChildLog(f, "===== child end =====");
+
+    fclose(f);
+    return 0;
 }
 
 static void runProbe(void) {
@@ -443,6 +562,8 @@ static void runProbe(void) {
 
     test_dirs();
     test_system_paths();
+
+    test_spawn_child_with_dyld_env();
 
     SRLog(@"===== end =====");
 }
@@ -566,6 +687,10 @@ static void runProbe(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        if (argc >= 2 && argv[1] && strcmp(argv[1], "--sr-child") == 0) {
+            return runChildMode(argc, argv);
+        }
+
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }

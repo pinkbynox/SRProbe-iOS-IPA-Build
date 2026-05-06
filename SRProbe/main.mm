@@ -32,6 +32,14 @@ extern char **environ;
 #define VM_PROT_SLIDE 0x20
 #endif
 
+#ifndef POSIX_SPAWN_SETEXEC
+#define POSIX_SPAWN_SETEXEC 0x0040
+#endif
+
+#ifndef _POSIX_SPAWN_RESLIDE
+#define _POSIX_SPAWN_RESLIDE 0x0800
+#endif
+
 struct shared_file_np_local {
     int      sf_fd;
     uint32_t sf_mappings_count;
@@ -49,6 +57,7 @@ struct shared_file_mapping_slide_np_local {
 };
 
 static NSMutableString *gLogs;
+static bool gIsSetexecStage = false;
 
 static void SRLog(NSString *fmt, ...) {
     va_list args;
@@ -97,6 +106,34 @@ static NSString *makeProbeFile(void) {
     SRLog(@"makeProbeFile path=%@ ok=%d", path, ok ? 1 : 0);
 
     return path;
+}
+
+static NSString *childLogPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"srprobe_child.log"];
+}
+
+static NSString *fakeDSCDirPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"fake_dsc"];
+}
+
+static void createFakeDSCDir(void) {
+    NSString *dir = fakeDSCDirPath();
+
+    NSError *error = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:&error];
+
+    SRLog(@"create fake dsc dir=%@ error=%@", dir, error ? error.localizedDescription : @"nil");
+
+    NSString *dummyCache = [dir stringByAppendingPathComponent:@"dyld_shared_cache_arm64e"];
+    NSMutableData *data = [NSMutableData dataWithLength:0x4000];
+
+    memcpy((uint8_t *)data.mutableBytes, "dyld_v1  arm64e", 15);
+
+    BOOL ok = [data writeToFile:dummyCache atomically:YES];
+    SRLog(@"create dummy cache=%@ ok=%d", dummyCache, ok ? 1 : 0);
 }
 
 static void test_shared_region_check(void) {
@@ -394,31 +431,23 @@ static void test_system_paths(void) {
     }
 }
 
-static NSString *childLogPath(void) {
-    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"srprobe_child.log"];
-}
+static void logStageEnvironment(void) {
+    const char *stage = getenv("SRPROBE_SETEXEC_STAGE");
+    const char *flag = getenv("SRPROBE_SETEXEC_FLAGS");
+    const char *dscDir = getenv("DYLD_SHARED_CACHE_DIR");
+    const char *dscRegion = getenv("DYLD_SHARED_REGION");
+    const char *dyldPrintEnv = getenv("DYLD_PRINT_ENV");
+    const char *dyldPrintApis = getenv("DYLD_PRINT_APIS");
+    const char *dyldPrintSegments = getenv("DYLD_PRINT_SEGMENTS");
 
-static NSString *fakeDSCDirPath(void) {
-    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"fake_dsc"];
-}
-
-static void createFakeDSCDir(void) {
-    NSString *dir = fakeDSCDirPath();
-
-    NSError *error = nil;
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:&error];
-
-    SRLog(@"create fake dsc dir=%@ error=%@", dir, error ? error.localizedDescription : @"nil");
-
-    NSString *dummyCache = [dir stringByAppendingPathComponent:@"dyld_shared_cache_arm64e"];
-    NSMutableData *data = [NSMutableData dataWithLength:0x4000];
-    memcpy((uint8_t *)data.mutableBytes, "dyld_v1  arm64e", 15);
-    BOOL ok = [data writeToFile:dummyCache atomically:YES];
-
-    SRLog(@"create dummy cache=%@ ok=%d", dummyCache, ok ? 1 : 0);
+    SRLog(@"SETEXEC/STAGE argv-or-env stage=%d", gIsSetexecStage ? 1 : 0);
+    SRLog(@"getenv SRPROBE_SETEXEC_STAGE=%s", stage ? stage : "(null)");
+    SRLog(@"getenv SRPROBE_SETEXEC_FLAGS=%s", flag ? flag : "(null)");
+    SRLog(@"getenv DYLD_SHARED_CACHE_DIR=%s", dscDir ? dscDir : "(null)");
+    SRLog(@"getenv DYLD_SHARED_REGION=%s", dscRegion ? dscRegion : "(null)");
+    SRLog(@"getenv DYLD_PRINT_ENV=%s", dyldPrintEnv ? dyldPrintEnv : "(null)");
+    SRLog(@"getenv DYLD_PRINT_APIS=%s", dyldPrintApis ? dyldPrintApis : "(null)");
+    SRLog(@"getenv DYLD_PRINT_SEGMENTS=%s", dyldPrintSegments ? dyldPrintSegments : "(null)");
 }
 
 static void test_spawn_child_with_dyld_env(void) {
@@ -466,7 +495,7 @@ static void test_spawn_child_with_dyld_env(void) {
 
     int ret = posix_spawn(&pid, exe_c, NULL, NULL, argv_child, envp_child);
 
-    SRLog(@"posix_spawn ret=%d errno=%d (%s) pid=%d", ret, errno, strerror(errno), pid);
+    SRLog(@"posix_spawn child ret=%d errno=%d (%s) pid=%d", ret, errno, strerror(errno), pid);
 
     if (ret == 0 && pid > 0) {
         int status = 0;
@@ -494,6 +523,76 @@ static void test_spawn_child_with_dyld_env(void) {
     } else {
         SRLog(@"no child log read error=%@", error ? error.localizedDescription : @"nil");
     }
+}
+
+static void test_posix_spawn_setexec(uint16_t flags, NSString *label) {
+    NSString *exe = [[NSBundle mainBundle] executablePath];
+    NSString *fakeDir = fakeDSCDirPath();
+
+    createFakeDSCDir();
+
+    SRLog(@"SETEXEC test %@ exe=%@ flags=0x%x fakeDir=%@", label, exe, flags, fakeDir);
+
+    const char *exe_c = [exe fileSystemRepresentation];
+    const char *fake_c = [fakeDir fileSystemRepresentation];
+
+    char arg0[4096];
+    char cacheDirEnv[4096];
+    char flagsEnv[128];
+
+    snprintf(arg0, sizeof(arg0), "%s", exe_c);
+    snprintf(cacheDirEnv, sizeof(cacheDirEnv), "DYLD_SHARED_CACHE_DIR=%s", fake_c);
+    snprintf(flagsEnv, sizeof(flagsEnv), "SRPROBE_SETEXEC_FLAGS=0x%x", flags);
+
+    char *argv_exec[] = {
+        arg0,
+        (char *)"--setexec-stage",
+        NULL
+    };
+
+    char *envp_exec[] = {
+        (char *)"SRPROBE_SETEXEC_STAGE=1",
+        flagsEnv,
+        cacheDirEnv,
+        (char *)"DYLD_SHARED_REGION=private",
+        (char *)"DYLD_PRINT_ENV=1",
+        (char *)"DYLD_PRINT_APIS=1",
+        (char *)"DYLD_PRINT_SEGMENTS=1",
+        NULL
+    };
+
+    posix_spawnattr_t attr;
+    memset(&attr, 0, sizeof(attr));
+
+    int ar = posix_spawnattr_init(&attr);
+    SRLog(@"posix_spawnattr_init ret=%d errno=%d (%s)", ar, errno, strerror(errno));
+
+    if (ar != 0) {
+        return;
+    }
+
+    errno = 0;
+    int sfr = posix_spawnattr_setflags(&attr, flags);
+    SRLog(@"posix_spawnattr_setflags %@ ret=%d errno=%d (%s)", label, sfr, errno, strerror(errno));
+
+    if (sfr != 0) {
+        posix_spawnattr_destroy(&attr);
+        return;
+    }
+
+    pid_t pid = 0;
+    errno = 0;
+
+    int ret = posix_spawn(&pid, exe_c, NULL, &attr, argv_exec, envp_exec);
+
+    /*
+     * If POSIX_SPAWN_SETEXEC succeeds, this line should not execute:
+     * the current process is replaced by a fresh instance.
+     */
+    SRLog(@"posix_spawn SETEXEC %@ returned ret=%d errno=%d (%s) pid=%d",
+          label, ret, errno, strerror(errno), pid);
+
+    posix_spawnattr_destroy(&attr);
 }
 
 static int runChildMode(int argc, char *argv[]) {
@@ -553,17 +652,39 @@ static void runProbe(void) {
     SRLog(@"===== begin =====");
     SRLog(@"pid=%d", getpid());
 
+    logStageEnvironment();
+
     test_shared_region_check();
     test_syscall_empty();
     test_syscall_bad_fd_no_slide();
 
-    test_syscall_container_file_no_slide();
-    test_syscall_container_file_with_slide_flag_benign();
+    if (!gIsSetexecStage) {
+        test_syscall_container_file_no_slide();
+        test_syscall_container_file_with_slide_flag_benign();
 
-    test_dirs();
-    test_system_paths();
+        test_dirs();
+        test_system_paths();
 
-    test_spawn_child_with_dyld_env();
+        test_spawn_child_with_dyld_env();
+
+        /*
+         * Run only the plain SETEXEC test automatically.
+         * If it succeeds, process is replaced and this call never returns.
+         * If it fails, we then test SETEXEC|RESLIDE.
+         */
+        test_posix_spawn_setexec(POSIX_SPAWN_SETEXEC, @"SETEXEC_ONLY");
+
+        test_posix_spawn_setexec(POSIX_SPAWN_SETEXEC | _POSIX_SPAWN_RESLIDE,
+                                 @"SETEXEC_RESLIDE");
+    } else {
+        SRLog(@"in setexec stage: not re-running spawn tests to avoid loop");
+
+        test_syscall_container_file_no_slide();
+        test_syscall_container_file_with_slide_flag_benign();
+
+        test_path_no_slide(@"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e");
+        test_path_with_slide_benign(@"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e");
+    }
 
     SRLog(@"===== end =====");
 }
@@ -687,8 +808,17 @@ static void runProbe(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        if (argc >= 2 && argv[1] && strcmp(argv[1], "--sr-child") == 0) {
-            return runChildMode(argc, argv);
+        for (int i = 1; i < argc; i++) {
+            if (argv[i] && strcmp(argv[i], "--sr-child") == 0) {
+                return runChildMode(argc, argv);
+            }
+            if (argv[i] && strcmp(argv[i], "--setexec-stage") == 0) {
+                gIsSetexecStage = true;
+            }
+        }
+
+        if (getenv("SRPROBE_SETEXEC_STAGE") != NULL) {
+            gIsSetexecStage = true;
         }
 
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));

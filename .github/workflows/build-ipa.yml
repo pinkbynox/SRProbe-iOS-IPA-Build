@@ -56,7 +56,7 @@ jobs:
           fi
 
           echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
-          echo "Detected path: ${{ steps.detect.outputs.path }}"
+          echo "Detected project/workspace: $WORKSPACE$PROJECT"
           echo "Detected scheme: $SCHEME"
 
       - name: Build unsigned app
@@ -65,27 +65,27 @@ jobs:
 
           BUILD_DIR="$PWD/build-output"
 
+          COMMON_FLAGS=(
+            -configuration Release
+            -sdk iphoneos
+            -derivedDataPath "$BUILD_DIR"
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY=""
+            OTHER_LDFLAGS="-framework UIKit -framework Foundation -framework CoreGraphics"
+          )
+
           if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
             xcodebuild \
               -workspace "${{ steps.detect.outputs.path }}" \
               -scheme "${{ steps.detect.outputs.scheme }}" \
-              -configuration Release \
-              -sdk iphoneos \
-              -derivedDataPath "$BUILD_DIR" \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
+              "${COMMON_FLAGS[@]}" \
               clean build
           else
             xcodebuild \
               -project "${{ steps.detect.outputs.path }}" \
               -scheme "${{ steps.detect.outputs.scheme }}" \
-              -configuration Release \
-              -sdk iphoneos \
-              -derivedDataPath "$BUILD_DIR" \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
+              "${COMMON_FLAGS[@]}" \
               clean build
           fi
 

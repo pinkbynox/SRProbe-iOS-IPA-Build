@@ -58,6 +58,7 @@ static void SRLog(NSString *fmt, ...) {
     if (!gLogs) {
         gLogs = [NSMutableString string];
     }
+
     [gLogs appendString:full];
 
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SRProbeLogsUpdated"
@@ -78,22 +79,36 @@ static NSString *makeProbeFile(void) {
 
     BOOL ok = [data writeToFile:path atomically:YES];
     SRLog(@"makeProbeFile path=%@ ok=%d", path, ok ? 1 : 0);
+
     return path;
 }
 
 static void test_shared_region_check(void) {
     errno = 0;
     uint64_t start = 0;
+
     long ret = syscall(SYS_shared_region_check_np, &start);
+
     SRLog(@"shared_region_check_np syscall ret=%ld errno=%d (%s) start=0x%llx",
           ret, errno, strerror(errno), start);
 }
 
+static void test_shared_region_check_null(void) {
+    errno = 0;
+
+    long ret = syscall(SYS_shared_region_check_np, NULL);
+
+    SRLog(@"shared_region_check_np NULL syscall ret=%ld errno=%d (%s)",
+          ret, errno, strerror(errno));
+}
+
 static void test_syscall_empty(void) {
     errno = 0;
+
     long ret = syscall(SYS_shared_region_map_and_slide_2_np,
                        0, NULL,
                        0, NULL);
+
     log_errno(@"syscall536 empty", ret);
 }
 
@@ -114,16 +129,19 @@ static void test_syscall_bad_fd_no_slide(void) {
     maps[0].sms_init_prot = VM_PROT_READ;
 
     errno = 0;
+
     long ret = syscall(SYS_shared_region_map_and_slide_2_np,
                        1, files,
                        1, maps);
+
     log_errno(@"syscall536 bad_fd_no_slide", ret);
 }
 
 static void test_syscall_container_file_no_slide(void) {
     NSString *path = makeProbeFile();
     int fd = open(path.UTF8String, O_RDONLY);
-    SRLog(@"probe file no_slide fd=%d", fd);
+
+    SRLog(@"probe file no_slide fd=%d errno=%d (%s)", fd, errno, strerror(errno));
 
     if (fd < 0) {
         log_errno(@"open probe file", -1);
@@ -146,9 +164,11 @@ static void test_syscall_container_file_no_slide(void) {
     maps[0].sms_init_prot = VM_PROT_READ;
 
     errno = 0;
+
     long ret = syscall(SYS_shared_region_map_and_slide_2_np,
                        1, files,
                        1, maps);
+
     log_errno(@"syscall536 container_file_no_slide", ret);
 
     close(fd);
@@ -157,7 +177,8 @@ static void test_syscall_container_file_no_slide(void) {
 static void test_syscall_container_file_with_slide_flag_benign(void) {
     NSString *path = makeProbeFile();
     int fd = open(path.UTF8String, O_RDONLY);
-    SRLog(@"probe file with_slide fd=%d", fd);
+
+    SRLog(@"probe file with_slide fd=%d errno=%d (%s)", fd, errno, strerror(errno));
 
     if (fd < 0) {
         log_errno(@"open probe file slide", -1);
@@ -166,6 +187,7 @@ static void test_syscall_container_file_with_slide_flag_benign(void) {
 
     void *slide = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE,
                        MAP_ANON | MAP_PRIVATE, -1, 0);
+
     if (slide == MAP_FAILED) {
         log_errno(@"mmap slide", -1);
         close(fd);
@@ -190,13 +212,121 @@ static void test_syscall_container_file_with_slide_flag_benign(void) {
     maps[0].sms_init_prot = VM_PROT_READ | VM_PROT_SLIDE;
 
     errno = 0;
+
     long ret = syscall(SYS_shared_region_map_and_slide_2_np,
                        1, files,
                        1, maps);
+
     log_errno(@"syscall536 container_file_with_VM_PROT_SLIDE_benign", ret);
 
     munmap(slide, 0x4000);
     close(fd);
+}
+
+static void test_path_no_slide(NSString *path) {
+    errno = 0;
+    int fd = open(path.UTF8String, O_RDONLY);
+
+    SRLog(@"open system path=%@ fd=%d errno=%d (%s)",
+          path, fd, errno, strerror(errno));
+
+    if (fd < 0) {
+        return;
+    }
+
+    shared_file_np_local files[1] = {};
+    shared_file_mapping_slide_np_local maps[1] = {};
+
+    files[0].sf_fd = fd;
+    files[0].sf_mappings_count = 1;
+    files[0].sf_slide = 0;
+
+    maps[0].sms_address = 0x180000000ULL;
+    maps[0].sms_size = 0x4000;
+    maps[0].sms_file_offset = 0;
+    maps[0].sms_slide_size = 0;
+    maps[0].sms_slide_start = 0;
+    maps[0].sms_max_prot = VM_PROT_READ;
+    maps[0].sms_init_prot = VM_PROT_READ;
+
+    errno = 0;
+
+    long ret = syscall(SYS_shared_region_map_and_slide_2_np,
+                       1, files,
+                       1, maps);
+
+    log_errno([NSString stringWithFormat:@"syscall536 path_no_slide %@", path], ret);
+
+    close(fd);
+}
+
+static void test_path_with_slide_benign(NSString *path) {
+    errno = 0;
+    int fd = open(path.UTF8String, O_RDONLY);
+
+    SRLog(@"open system path with_slide=%@ fd=%d errno=%d (%s)",
+          path, fd, errno, strerror(errno));
+
+    if (fd < 0) {
+        return;
+    }
+
+    void *slide = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE,
+                       MAP_ANON | MAP_PRIVATE, -1, 0);
+
+    if (slide == MAP_FAILED) {
+        log_errno(@"mmap system benign slide", -1);
+        close(fd);
+        return;
+    }
+
+    memset(slide, 0, 0x4000);
+
+    shared_file_np_local files[1] = {};
+    shared_file_mapping_slide_np_local maps[1] = {};
+
+    files[0].sf_fd = fd;
+    files[0].sf_mappings_count = 1;
+    files[0].sf_slide = 0;
+
+    maps[0].sms_address = 0x180000000ULL;
+    maps[0].sms_size = 0x4000;
+    maps[0].sms_file_offset = 0;
+    maps[0].sms_slide_size = 0x4000;
+    maps[0].sms_slide_start = (uint64_t)slide;
+    maps[0].sms_max_prot = VM_PROT_READ | VM_PROT_SLIDE;
+    maps[0].sms_init_prot = VM_PROT_READ | VM_PROT_SLIDE;
+
+    errno = 0;
+
+    long ret = syscall(SYS_shared_region_map_and_slide_2_np,
+                       1, files,
+                       1, maps);
+
+    log_errno([NSString stringWithFormat:@"syscall536 path_with_slide_benign %@", path], ret);
+
+    munmap(slide, 0x4000);
+    close(fd);
+}
+
+static void test_system_paths(void) {
+    NSArray<NSString *> *paths = @[
+        @"/usr/lib/dyld",
+        @"/System/Library/Frameworks/UIKit.framework/UIKit",
+        @"/System/Library/Frameworks/Foundation.framework/Foundation",
+        @"/System/Library/dyld/dyld_shared_cache_arm64e",
+        @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+        @"/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+        @"/private/preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e"
+    ];
+
+    for (NSString *path in paths) {
+        test_path_no_slide(path);
+    }
+
+    for (NSString *path in paths) {
+        test_path_with_slide_benign(path);
+    }
 }
 
 static void runProbe(void) {
@@ -208,6 +338,8 @@ static void runProbe(void) {
     test_syscall_bad_fd_no_slide();
     test_syscall_container_file_no_slide();
     test_syscall_container_file_with_slide_flag_benign();
+
+    test_system_paths();
 
     SRLog(@"===== end =====");
 }
@@ -221,6 +353,7 @@ static void runProbe(void) {
 
 - (void)refreshLogs {
     self.textView.text = gLogs ?: @"";
+
     if (self.textView.text.length > 0) {
         NSRange bottom = NSMakeRange(self.textView.text.length - 1, 1);
         [self.textView scrollRangeToVisible:bottom];
@@ -231,7 +364,7 @@ static void runProbe(void) {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = frame;
     [button setTitle:title forState:UIControlStateNormal];
-    button.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1.0];
+    button.backgroundColor = [UIColor colorWithWhite:0.90 alpha:1.0];
     button.layer.cornerRadius = 8;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
@@ -244,13 +377,21 @@ static void runProbe(void) {
 
 - (void)shareLogs {
     NSString *logs = gLogs ?: @"";
+
     UIActivityViewController *vc = [[UIActivityViewController alloc] initWithActivityItems:@[logs]
                                                                      applicationActivities:nil];
+
     [self.window.rootViewController presentViewController:vc animated:YES completion:nil];
 }
 
 - (void)rerunProbe {
+    if (!gLogs) {
+        gLogs = [NSMutableString string];
+    }
+
     [gLogs setString:@""];
+    [self refreshLogs];
+
     runProbe();
 }
 
@@ -262,7 +403,10 @@ static void runProbe(void) {
     UIViewController *root = [UIViewController new];
     root.view.backgroundColor = [UIColor whiteColor];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 48, root.view.bounds.size.width - 32, 30)];
+    CGFloat width = root.view.bounds.size.width;
+    CGFloat height = root.view.bounds.size.height;
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 48, width - 32, 30)];
     title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     title.text = @"SRProbe logs";
     title.font = [UIFont boldSystemFontOfSize:22];
@@ -270,12 +414,15 @@ static void runProbe(void) {
     [root.view addSubview:title];
 
     CGFloat buttonY = 88;
+
     UIButton *copy = [self buttonWithTitle:@"Copy logs"
                                     action:@selector(copyLogs)
                                      frame:CGRectMake(16, buttonY, 105, 42)];
+
     UIButton *share = [self buttonWithTitle:@"Share logs"
                                      action:@selector(shareLogs)
                                       frame:CGRectMake(132, buttonY, 105, 42)];
+
     UIButton *rerun = [self buttonWithTitle:@"Run again"
                                      action:@selector(rerunProbe)
                                       frame:CGRectMake(248, buttonY, 105, 42)];
@@ -284,15 +431,14 @@ static void runProbe(void) {
     [root.view addSubview:share];
     [root.view addSubview:rerun];
 
-    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(12, 145,
-                                                                 root.view.bounds.size.width - 24,
-                                                                 root.view.bounds.size.height - 160)];
+    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(12, 145, width - 24, height - 160)];
     self.textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.textView.editable = NO;
     self.textView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     self.textView.textColor = [UIColor blackColor];
     self.textView.backgroundColor = [UIColor colorWithWhite:0.96 alpha:1.0];
     self.textView.layer.cornerRadius = 8;
+
     [root.view addSubview:self.textView];
 
     [[NSNotificationCenter defaultCenter] addObserverForName:@"SRProbeLogsUpdated"

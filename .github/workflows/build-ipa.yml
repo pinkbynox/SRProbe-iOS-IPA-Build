@@ -1,120 +1,116 @@
-name: Build iOS IPA
+name: Build SRProbe unsigned IPA
 
 on:
   workflow_dispatch:
     inputs:
       scheme:
-        description: 'Xcode scheme (optional — auto-detect if empty)'
+        description: "Xcode scheme, leave empty for auto-detect"
         required: false
-      export_method:
-        description: 'Export method: app-store, ad-hoc, enterprise, development'
-        required: false
-        default: 'ad-hoc'
+        default: ""
 
 jobs:
   build:
-    runs-on: macos-latest
-    env:
-      EXPORT_METHOD: ${{ github.event.inputs.export_method || 'ad-hoc' }}
-      INPUT_SCHEME: ${{ github.event.inputs.scheme }}
+    runs-on: macos-15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install CocoaPods if needed
+      - name: Show Xcode
         run: |
-          if [ -f Podfile ]; then
-            sudo gem install cocoapods --no-document || true
-            pod install || true
-          fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Install certificate (if provided)
-        if: ${{ secrets.P12_BASE64 != '' }}
-        run: |
-          echo "$P12_BASE64" | base64 --decode > cert.p12
-          security create-keychain -p actions build.keychain
-          security import cert.p12 -k ~/Library/Keychains/build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign || true
-          security list-keychains -s ~/Library/Keychains/build.keychain
-          security default-keychain -s ~/Library/Keychains/build.keychain
-          security unlock-keychain -p actions ~/Library/Keychains/build.keychain
-        env:
-          P12_BASE64: ${{ secrets.P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-
-      - name: Install provisioning profile (if provided)
-        if: ${{ secrets.PROFILE_BASE64 != '' }}
-        run: |
-          echo "$PROFILE_BASE64" | base64 --decode > profile.mobileprovision
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp profile.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/"
-        env:
-          PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
-
-      - name: Detect project / workspace and scheme
+      - name: Detect project and scheme
         id: detect
         run: |
           set -e
-          # find workspace or project
-          WORKSPACE=$(ls *.xcworkspace 2>/dev/null | head -n1 || true)
-          PROJECT=$(ls *.xcodeproj 2>/dev/null | head -n1 || true)
+
+          WORKSPACE=$(find . -maxdepth 2 -name "*.xcworkspace" | head -n 1 || true)
+          PROJECT=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1 || true)
+
           if [ -n "$WORKSPACE" ]; then
-            echo "project_path=$WORKSPACE" >> $GITHUB_OUTPUT
-            BUILD_FLAG="-workspace $WORKSPACE"
+            echo "kind=workspace" >> "$GITHUB_OUTPUT"
+            echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
+            LIST_CMD="xcodebuild -workspace $WORKSPACE -list"
           elif [ -n "$PROJECT" ]; then
-            echo "project_path=$PROJECT" >> $GITHUB_OUTPUT
-            BUILD_FLAG="-project $PROJECT"
+            echo "kind=project" >> "$GITHUB_OUTPUT"
+            echo "path=$PROJECT" >> "$GITHUB_OUTPUT"
+            LIST_CMD="xcodebuild -project $PROJECT -list"
           else
-            echo "No .xcworkspace or .xcodeproj found in repo root" >&2
+            echo "No .xcodeproj or .xcworkspace found"
+            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
-          # scheme: prefer input, otherwise try to detect
-          if [ -n "$INPUT_SCHEME" ]; then
-            SCHEME="$INPUT_SCHEME"
+          if [ -n "${{ github.event.inputs.scheme }}" ]; then
+            SCHEME="${{ github.event.inputs.scheme }}"
           else
-            if [ -n "$WORKSPACE" ]; then
-              SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -quiet 2>/dev/null | sed -n '/Schemes:/,/^$/p' | tail -n +2 | head -n1 || true)
-            else
-              SCHEME=$(xcodebuild -project "$PROJECT" -list -quiet 2>/dev/null | sed -n '/Schemes:/,/^$/p' | tail -n +2 | head -n1 || true)
-            fi
-          fi
-          if [ -z "$SCHEME" ]; then echo "Could not detect scheme; provide scheme as workflow input" >&2; exit 1; fi
-          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
-
-      - name: Archive (xcodebuild)
-        run: |
-          set -e
-          ARCHIVE_PATH="$PWD/build/${{ steps.detect.outputs.scheme }}.xcarchive"
-          mkdir -p $(dirname "$ARCHIVE_PATH")
-          if [ -n "$(echo '${{ steps.detect.outputs.project_path }}' | grep .xcworkspace || true)" ]; then
-            xcodebuild -workspace "${{ steps.detect.outputs.project_path }}" -scheme "${{ steps.detect.outputs.scheme }}" -configuration Release -archivePath "$ARCHIVE_PATH" clean archive | xcpretty || true
-          else
-            xcodebuild -project "${{ steps.detect.outputs.project_path }}" -scheme "${{ steps.detect.outputs.scheme }}" -configuration Release -archivePath "$ARCHIVE_PATH" clean archive | xcpretty || true
+            SCHEME=$($LIST_CMD 2>/dev/null | awk '/Schemes:/{flag=1; next} flag && NF {print $1; exit}')
           fi
 
-      - name: Create exportOptions.plist
-        run: |
-          python3 << 'PYEOF'
-          import plistlib
-          export_options = {
-              'method': '${{ env.EXPORT_METHOD }}',
-              'compileBitcode': False,
-              'signingStyle': 'automatic',
-          }
-          with open('exportOptions.plist', 'wb') as f:
-              plistlib.dump(export_options, f)
-          PYEOF
+          if [ -z "$SCHEME" ]; then
+            echo "Could not detect scheme"
+            $LIST_CMD
+            exit 1
+          fi
 
-      - name: Export IPA
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Detected path: ${{ steps.detect.outputs.path }}"
+          echo "Detected scheme: $SCHEME"
+
+      - name: Build unsigned app
         run: |
           set -e
-          ARCHIVE_PATH="$PWD/build/${{ steps.detect.outputs.scheme }}.xcarchive"
-          EXPORT_DIR="$PWD/output"
-          mkdir -p "$EXPORT_DIR"
-          xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" -exportOptionsPlist exportOptions.plist -exportPath "$EXPORT_DIR" | xcpretty || true
 
-      - name: Upload IPA
+          BUILD_DIR="$PWD/build-output"
+
+          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
+            xcodebuild \
+              -workspace "${{ steps.detect.outputs.path }}" \
+              -scheme "${{ steps.detect.outputs.scheme }}" \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath "$BUILD_DIR" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              clean build
+          else
+            xcodebuild \
+              -project "${{ steps.detect.outputs.path }}" \
+              -scheme "${{ steps.detect.outputs.scheme }}" \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath "$BUILD_DIR" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              clean build
+          fi
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+
+          APP_PATH=$(find "$PWD/build-output" -path "*/Build/Products/Release-iphoneos/*.app" -type d | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found"
+            find "$PWD/build-output" -maxdepth 8 -type d | sort
+            exit 1
+          fi
+
+          echo "Found app: $APP_PATH"
+
+          rm -rf Payload SRProbe-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+
+          /usr/bin/zip -r SRProbe-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ipa-output
-          path: output/*.ipa
+          name: SRProbe-unsigned-ipa
+          path: SRProbe-unsigned.ipa

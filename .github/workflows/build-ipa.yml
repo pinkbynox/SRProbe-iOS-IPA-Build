@@ -94,20 +94,16 @@ jobs:
 
       - name: Create exportOptions.plist
         run: |
-          cat > exportOptions.plist <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key>
-  <string>${EXPORT_METHOD}</string>
-  <key>compileBitcode</key>
-  <false/>
-  <key>signingStyle</key>
-  <string>automatic</string>
-</dict>
-</plist>
-EOF
+          python3 << 'PYEOF'
+          import plistlib
+          export_options = {
+              'method': '${{ env.EXPORT_METHOD }}',
+              'compileBitcode': False,
+              'signingStyle': 'automatic',
+          }
+          with open('exportOptions.plist', 'wb') as f:
+              plistlib.dump(export_options, f)
+          PYEOF
 
       - name: Export IPA
         run: |
